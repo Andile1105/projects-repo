@@ -1,0 +1,48 @@
+Microsoft Windows [Version 10.0.26100.7171]
+(c) Microsoft Corporation. All rights reserved.
+
+C:\Users\andilee>git --version
+git version 2.51.0.windows.1
+
+C:\Users\andilee>cd C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo
+
+C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo>git init
+Reinitialized existing Git repository in C:/Users/andilee/OneDrive - African Parks/Andile's Workspace/Data Science/projects-repo/.git/
+
+C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo>git remote add origin https://github.com/Andile1105/projects-repo.git
+error: remote origin already exists.
+
+C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo>git add .
+
+C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo>git commit -m "Add project files"
+On branch main
+nothing to commit, working tree clean
+
+C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo>git push
+fatal: The current branch main has no upstream branch.
+To push the current branch and set the remote as upstream, use
+
+    git push --set-upstream origin main
+
+To have this happen automatically for branches without a tracking
+upstream, see 'push.autoSetupRemote' in 'git help config'.
+
+
+C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo>git push --set-upstream origin main
+Enumerating objects: 14, done.
+Counting objects: 100% (14/14), done.
+Delta compression using up to 20 threads
+Compressing objects: 100% (11/11), done.
+Writing objects: 100% (14/14), 14.94 MiB | 2.01 MiB/s, done.
+Total 14 (delta 0), reused 0 (delta 0), pack-reused 0 (from 0)
+To https://github.com/Andile1105/projects-repo.git
+ * [new branch]      main -> main
+branch 'main' set up to track 'origin/main'.
+
+C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo>git status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+nothing to commit, working tree clean
+
+C:\Users\andilee\OneDrive - African Parks\Andile's Workspace\Data Science\projects-repo>
