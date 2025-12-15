@@ -1,0 +1,362 @@
+---
+title: "Quantium Data Analytics Job Simulation"
+author: "Gambushe Andile"
+date: "2025-11-28"
+output:
+  html_document:
+    theme: default
+---
+
+```{r libraries setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, results = "hide")
+
+library(readr)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(scales)
+library(lubridate)
+library(gridExtra)
+library(patchwork)
+library(stringr)
+library(rlang)
+```
+
+```{r loading files}
+trans <- read_csv("QVI_transaction_data.csv")
+cust <- read_csv("QVI_purchase_behaviour.csv")
+
+# Quick preview
+print(dim(trans)); head(trans)
+print(dim(cust)); head(cust)
+```
+
+# Task 1*
+- Analyzing transaction and customer data to identify trends and inconsistencies. 
+- Developing metrics and examine sales drivers to gain insights into overall sales performance.
+- Creating visualizations and prepare findings to formulate a clear recommendation for the client's strategy.
+
+```{r data cleaning process}
+# Data structure
+str(trans)
+str(cust)
+
+# Column names lowercase
+setnames(trans, tolower(names(trans)))
+setnames(cust, tolower(names(cust)))
+
+# Converting a tibble to data.table
+trans <- as.data.table(trans)
+
+# Formatting date
+if (is.numeric(trans$date)) {
+  trans[, date := as.Date(date, origin = "1899-12-30")]
+} else {
+  trans[, date := as.Date(date)]
+}
+
+# Dropping obvious bad loyalty number if present (from templates)
+
+if ("lylty_card_nbr" %in% names(trans) && 226000 %in% trans$lylty_card_nbr) {
+trans <- trans[lylty_card_nbr != 226000]
+}
+
+# Trimming whitespace and upper product names
+
+if ("prod_name" %in% names(trans)) {
+trans[, prod_name := str_squish(toupper(prod_name))]
+}
+
+# Ensuring numeric fields
+
+num_cols <- intersect(c("prod_qty","tot_sales","scan_prod_id","unit_price","retail_price"), names(trans))
+for (c in num_cols) trans[, (c) := as.numeric(get(c))]
+
+#Preview cleaned
+
+glimpse_sample <- function(dt, n=3) print(dt[1])
+glimpse_sample(trans); glimpse_sample(cust)
+```
+
+```{r Feature engineering (pack size, brand, yearmonth)}
+# PACK_SIZE from product name. Extracting first numeric token (e.g., 30g -> 30)
+
+if ("prod_name" %in% names(trans)) {
+  library(stringr)
+  trans[, pack_size := as.numeric(str_extract(prod_name, "\\d{1,3}"))]
+  trans[, brand := tstrsplit(prod_name, " ", keep = 1)]
+}
+
+# YEARMONTH integer like 201901
+trans[, yearmonth := year(date) * 100 + month(date)]
+
+# Merge with customers (left join)
+if ("lylty_card_nbr" %in% names(trans) & "lylty_card_nbr" %in% names(cust)) {
+data_full <- merge(trans, cust, by = "lylty_card_nbr", all.x = TRUE)
+} else {
+data_full <- copy(trans)
+warning("lylty_card_nbr not found on both tables; continuing without customer merge.")
+}
+
+# Quick checks
+
+data_full[, .N, by = .(yearmonth)][order(-yearmonth)][1:10]
+```
+
+```{r Inconsistencies & data quality}
+# Na counts
+cols_check <- c("date","store_nbr","prod_name","prod_qty","tot_sales","lylty_card_nbr")
+na_report <- sapply(cols_check[cols_check %in% names(data_full)], function(c) sum(is.na(data_full[[c]])))
+na_report
+
+# Outliers
+bad_sales <- data_full[is.na(tot_sales) | tot_sales <= 0, .N]
+bad_sales
+
+# Unique stores & time span
+stores <- sort(unique(data_full$store_nbr))
+message("Stores found: ", length(stores))
+date_range <- range(data_full$date, na.rm = TRUE)
+message("Date range: ", date_range[1], " to ", date_range[2])
+```
+
+```{r Metrics & sales drivers}
+# Aggregate per store-month
+measureOverTime <- data_full[, .(
+  totSales = sum(tot_sales, na.rm = TRUE),
+  nTransactions = uniqueN(txn_id),
+  nCustomers = uniqueN(lylty_card_nbr),
+  prodQty = sum(prod_qty, na.rm = TRUE),
+  avgPricePerUnit = ifelse(sum(prod_qty, na.rm = TRUE) > 0,
+                           sum(tot_sales, na.rm = TRUE) / sum(prod_qty, na.rm = TRUE),
+                           NA_real_)
+), by = .(store_nbr, yearmonth)]
+
+# Add derived ratios
+
+measureOverTime[, transactionsPerCust := ifelse(nCustomers>0, nTransactions / nCustomers, NA_real_)]
+measureOverTime[, qtyPerTxn := ifelse(nTransactions>0, prodQty / nTransactions, NA_real_)]
+
+#Sample
+
+measureOverTime[order(store_nbr, yearmonth)][1:12]
+```
+
+```{r aggregated total sales trend}
+agg <- measureOverTime[, .(totSales = sum(totSales, na.rm=TRUE)), by = yearmonth][order(yearmonth)]
+gg1 <- ggplot(agg, aes(x = as.Date(paste0(substr(yearmonth,1,4), "-", substr(yearmonth,5,6), "-01")), y = totSales)) +
+geom_line() + geom_point() + labs(title = "Total Sales Over Time", x = "Date", y = "Total Sales")
+gg1
+```
+
+```{r heatmap: store vs monthly sales}
+
+sample_stores <- sample(unique(measureOverTime$store_nbr), min(12, length(unique(measureOverTime$store_nbr))))
+heat <- measureOverTime[store_nbr %in% sample_stores]
+gg2 <- ggplot(heat, aes(x = factor(yearmonth), y = factor(store_nbr), fill = totSales)) +
+geom_tile() + labs(title = "Sales heatmap (sample stores)", x = "YearMonth", y = "Store")
+
+gg1 + gg2 + plot_layout(nrow = 2)
+```
+
+```{r Drivers}
+drivers <- measureOverTime[, .(totSales, nCustomers, transactionsPerCust, qtyPerTxn, avgPricePerUnit)]
+cor_mat <- cor(na.omit(drivers))
+round(cor_mat, 2)
+head(drivers)
+```
+
+# Task 2
+- Define metrics to select control stores.
+- Analyze trial stores against controls.
+- Data analysis and visualization
+- Summary findings and recommendations.
+
+```{r Helper functions}
+# Correlation: for a metric column (as string) compare trial store series to all others
+
+calculateCorrelation <- function(measures, metric_col, trial_store) {
+stores <- unique(measures$store_nbr)
+res <- data.table(store2 = stores, corr = NA_real_)
+s1 <- measures[store_nbr == trial_store, .(yearmonth, v1 = get(metric_col))]
+for (i in seq_along(stores)) {
+st <- stores[i]
+if (st == trial_store) {
+res[i, corr := 1.0]
+next
+}
+s2 <- measures[store_nbr == st, .(yearmonth, v2 = get(metric_col))]
+merged <- merge(s1, s2, by = "yearmonth")
+if (nrow(merged) >= 2) {
+res[i, corr := cor(merged$v1, merged$v2, use = "complete.obs")]
+} else {
+res[i, corr := NA_real_]
+}
+}
+res[, store1 := trial_store]
+setcolorder(res, c("store1","store2","corr"))
+setnames(res, c("store1","store2","corr"))
+return(res)
+}
+```
+
+```{r MagnitudeDistance}
+calculateMagnitudeDistance <- function(measures, metric_col, trial_store) {
+  stores <- unique(measures$store_nbr)
+  s1 <- measures[store_nbr == trial_store, .(yearmonth, v1 = get(metric_col))]
+  
+  out <- data.table(store1 = integer(), store2 = integer(), avg_diff = numeric(), mag = numeric())
+  
+  for (st in stores) {
+    s2 <- measures[store_nbr == st, .(yearmonth, v2 = get(metric_col))]
+    merged <- merge(s1, s2, by = "yearmonth")
+    if (nrow(merged) == 0) {
+      # Add a row with NA for avg_diff
+      out <- rbind(out, data.table(store1 = trial_store, store2 = st, avg_diff = NA_real_, mag = NA_real_), fill = TRUE)
+      next
+    }
+    merged[, absdiff := abs(v1 - v2)]
+    avg_diff <- mean(merged$absdiff, na.rm = TRUE)
+    out <- rbind(out, data.table(store1 = trial_store, store2 = st, avg_diff = avg_diff, mag = NA_real_), fill = TRUE)
+  }
+  
+  # Normalize avg_diff to mag (1 best -> 0 worst)
+  out[, mag := ifelse(!is.na(avg_diff), 1 - (avg_diff - min(avg_diff, na.rm=TRUE)) / 
+                        (max(avg_diff, na.rm=TRUE) - min(avg_diff, na.rm=TRUE)), 0)]
+  
+  return(out[, .(store1, store2, mag)])
+}
+
+```
+
+```{r Control scoring pipeline}
+
+# Trial stores
+trial_stores <- c(77, 86, 88)
+
+# Keep stores with at least 8 pre-trial months
+store_month_counts <- measureOverTime[, .N, by = store_nbr]
+eligible_stores <- store_month_counts[N >= 8, store_nbr]
+measures_f <- measureOverTime[store_nbr %in% eligible_stores]
+
+# Define drivers for matching
+match_drivers <- c("totSales", "nCustomers")
+```
+
+```{r Trial}
+all_control_scores <- list()
+
+for (trial in trial_stores) {
+  driver_scores <- list()
+  for (d in match_drivers) {
+    corr_dt <- calculateCorrelation(measures_f, d, trial)
+    mag_dt <- calculateMagnitudeDistance(measures_f, d, trial)
+    merged <- merge(corr_dt, mag_dt, by = c("store1","store2"))
+    merged[, driver_score := 0.5 * corr + 0.5 * mag]
+    driver_scores[[d]] <- merged[, .(store1, store2, driver_score)]
+  }
+  
+  combined <- Reduce(function(a,b) merge(a,b, by = c("store1","store2")), driver_scores)
+  driver_score_cols <- grep("driver_score", names(combined), value = TRUE)
+  combined[, final_score := rowMeans(.SD, na.rm = TRUE), .SDcols = driver_score_cols]
+  combined <- combined[order(-final_score)]
+  all_control_scores[[as.character(trial)]] <- combined
+  message("Top control candidates for trial ", trial, ":")
+  print(head(combined, 6))
+}
+
+```
+
+```{r Trial Stores Results}
+trial <- trial_stores[1]
+cand_table <- all_control_scores[[as.character(trial)]]
+
+#pick best control that is not the trial itself
+
+control <- cand_table[store2 != trial][1, store2]
+message("Selected control for trial ", trial, " -> ", control)
+
+# Build series
+
+trial_series <- measureOverTime[store_nbr == trial, .(yearmonth, trialSales = totSales)]
+control_series <- measureOverTime[store_nbr == control, .(yearmonth, controlSales = totSales)]
+```
+
+```{r Trial Results}
+# Determine pre-trial months (example: months < 201902)
+
+pretrial_cut <- 201902 # adjust to match the trial start in the task
+pre_trial <- merge(trial_series, control_series, by = "yearmonth")[yearmonth < pretrial_cut]
+
+#scaling factor so control total (pre-trial) equals trial total
+
+scaling_factor <- sum(pre_trial$trialSales, na.rm = TRUE) / sum(pre_trial$controlSales, na.rm = TRUE)
+control_series[, controlSalesScaled := controlSales * scaling_factor]
+
+# Full merge for plotting and stats
+
+full_compare <- merge(trial_series, control_series[, .(yearmonth, controlSalesScaled)], by = "yearmonth", all.x = TRUE)
+full_compare[, pct_diff := (trialSales - controlSalesScaled) / controlSalesScaled] # signed
+full_compare[, abs_pct_diff := abs(pct_diff)]
+
+# Pre-trial baseline mean & sd (absolute percentage difference)
+
+baseline <- full_compare[yearmonth < pretrial_cut]
+mu <- mean(baseline$abs_pct_diff, na.rm = TRUE)
+sigma <- sd(baseline$abs_pct_diff, na.rm = TRUE)
+n_pre <- length(unique(baseline$yearmonth))
+df <- max(n_pre - 1, 1)
+
+# t-like threshold: use t critical for 95%
+
+t_crit <- qt(0.975, df) # two-sided
+
+# Compute z-scores (or t) per month relative to baseline mean
+
+full_compare[, z := (abs_pct_diff - mu) / sigma]
+
+# Significant months (abs z > t_crit)
+
+full_compare[, significant := z > t_crit]
+
+# Results for trial months (>= pretrial_cut)
+
+trial_period_results <- full_compare[yearmonth >= pretrial_cut]
+print(trial_period_results)
+```
+
+```{r full plot}
+full_plot <- merge(trial_series, control_series[, .(yearmonth, controlSalesScaled)], by = "yearmonth", all.x = TRUE)
+full_plot[, date := as.Date(paste0(substr(yearmonth,1,4), "-", substr(yearmonth,5,6), "-01"))]
+
+p <- ggplot(full_plot, aes(x = date)) +
+  geom_line(aes(y = trialSales, color = "Trial")) +
+  geom_line(aes(y = controlSalesScaled, color = "Scaled Control")) +
+  labs(title = paste("Trial", trial, "vs Scaled Control", control),
+       y = "Sales", x = "Date") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_color_manual(values = c("Trial" = "blue", "Scaled Control" = "red")) +
+  theme_minimal()
+
+# Add shaded band = baseline mean +/- 1.96*sd (on absolute pct diff scaled to control sales)
+
+baseline_mean <- mu; baseline_sd <- sigma
+
+# create band in sales units for plotting is more involved; show band on pct diff instead below.
+
+p
+
+```
+
+```{r Comparison}
+full_compare[, date := as.Date(paste0(substr(yearmonth,1,4), "-", substr(yearmonth,5,6), "-01"))]
+ggplot(full_compare, aes(x = date, y = abs_pct_diff)) +
+geom_line() + geom_point(aes(color = significant)) +
+geom_hline(yintercept = mu, linetype = "dashed") +
+geom_hline(yintercept = mu + t_crit * sigma, linetype = "dotted", color = "red") +
+labs(title = paste("Absolute % Difference (Trial", trial, "vs Control", control, ")"),
+y = "Absolute % Difference", x = "Date") +
+scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+theme_minimal()
+
+```
